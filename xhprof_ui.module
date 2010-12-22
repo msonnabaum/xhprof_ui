@@ -1,0 +1,214 @@
+<?php
+
+require_once(dirname(__FILE__) .'/xhprof.inc');
+
+/**
+ * Implementation of hook_menu().
+ */
+function xhprof_ui_menu() {
+  $items = array();
+  $items['devel/xhprof_ui'] = array(
+    'title' => 'xhprof',
+    'page callback' => 'xhprof_ui_page',
+    'access arguments' => array('access devel information'),
+    'menu_name' => 'devel',
+  );
+  $items['devel/xhprof_ui/view/%'] = array(
+    'title' => 'XHProf view',
+    'page callback' => 'xhprof_ui_display_run',
+    'page arguments' => array(3),
+    'access arguments' => array('access devel information'),
+  );
+  return $items;
+}
+
+
+/**
+ * XHProfRuns_Default is the default implementation of the
+ * iXHProfRuns interface for saving/fetching XHProf runs.
+ *
+ * It stores/retrieves runs to/from a filesystem directory
+ * specified by the "xhprof.output_dir" ini parameter.
+ *
+ * @author Kannan
+ */
+class DevelXHProfRuns implements iXHProfRuns {
+
+  private $dir = '';
+
+  private function gen_run_id($type) {
+    return uniqid();
+  }
+
+  private function file_name($run_id, $type) {
+
+    $file = "$run_id.$type";
+
+    if (!empty($this->dir)) {
+      $file = $this->dir . "/" . $file;
+    }
+    return $file;
+  }
+
+  public function __construct($dir = null) {
+
+    // if user hasn't passed a directory location,
+    // we use the xhprof.output_dir ini setting
+    // if specified, else we default to the directory
+    // in which the error_log file resides.
+
+    if (empty($dir)) {
+      $dir = ini_get("xhprof.output_dir");
+      if (empty($dir)) {
+
+        // some default that at least works on unix...
+        $dir = "/tmp";
+
+        xhprof_error("Warning: Must specify directory location for XHProf runs. ".
+                     "Trying {$dir} as default. You can either pass the " .
+                     "directory location as an argument to the constructor ".
+                     "for XHProfRuns_Default() or set xhprof.output_dir ".
+                     "ini param.");
+      }
+    }
+    $this->dir = $dir;
+  }
+
+  public function get_run($run_id, $type, &$run_desc) {
+    $run = cache_get('xhprof_' . $run_id, 'cache');
+    if (!empty($run)) {
+      return unserialize($run->data);
+    }
+    else {
+      $file_name = $this->file_name($run_id, $type);
+
+      if (!file_exists($file_name)) {
+        xhprof_error("Could not find file $file_name");
+        $run_desc = "Invalid Run Id = $run_id";
+        return null;
+      }
+
+      $contents = file_get_contents($file_name);
+      $run_desc = "XHProf Run (Namespace=$type)";
+      cache_set('xhprof_' . $run_id, $contents);
+      return unserialize($contents);
+    }
+  }
+
+  public function save_run($xhprof_data, $type, $run_id = null) {
+
+    // Use PHP serialize function to store the XHProf's
+    // raw profiler data.
+    $xhprof_data = serialize($xhprof_data);
+
+    if ($run_id === null) {
+      $run_id = $this->gen_run_id($type);
+    }
+
+    $file_name = $this->file_name($run_id, $type);
+    $file = fopen($file_name, 'w');
+
+    if ($file) {
+      fwrite($file, $xhprof_data);
+      fclose($file);
+    } else {
+      xhprof_error("Could not open $file_name\n");
+    }
+
+    // echo "Saved run in {$file_name}.\nRun id = {$run_id}.\n";
+    return $run_id;
+  }
+}
+
+function xhprof_ui_page() {
+  $dir = ini_get("xhprof.output_dir");
+  $files = xhprof_ui_scandir($dir, variable_get('site_name', ''));
+  dsm($files);
+
+  // Table attributes
+  $attributes = array('id' => 'xhprof-runs-table');
+  
+  // Table header
+  $header = array();
+  $header[] = array('data' => t('View'));
+  $header[] = array('data' => t('Date'));
+  
+  // Table rows
+  $rows = array();
+  foreach ($files as $file) {
+    list($run_id, $source) = explode('.', $file);
+    $row = array();
+    $row[] = array('data' => l($file['run_id'], 'devel/xhprof_ui/view/' . $file['run_id']));
+    $row[] = array('data' => $file['date']);
+    $rows[] = $row;
+  }
+
+  $output = theme_table($header, $rows, $attributes);
+  return $output; 
+}
+
+function xhprof_ui_display_run($run_id) {
+  $_GET['run'] = $run_id;
+  $source = variable_get('site_name', '');
+  $_GET['source'] = $source;
+  $xhprof_lib_root = variable_get('devel_xhprof_directory', '') . '/xhprof_lib';
+  include_once $xhprof_lib_root . '/display/xhprof.php';
+  
+  // param name, its type, and default value
+  $params = array('run'        => array(XHPROF_STRING_PARAM, ''),
+                'wts'        => array(XHPROF_STRING_PARAM, ''),
+                'symbol'     => array(XHPROF_STRING_PARAM, ''),
+                'sort'       => array(XHPROF_STRING_PARAM, 'wt'), // wall time
+                'run1'       => array(XHPROF_STRING_PARAM, ''),
+                'run2'       => array(XHPROF_STRING_PARAM, ''),
+                'source'     => array(XHPROF_STRING_PARAM, 'xhprof'),
+                'all'        => array(XHPROF_UINT_PARAM, 0),
+                );
+
+  // pull values of these params, and create named globals for each param
+  xhprof_param_init($params);
+
+   //reset params to be a array of variable names to values
+   //by the end of this page, param should only contain values that need
+   //to be preserved for the next page. unset all unwanted keys in $params.
+  foreach ($params as $k => $v) {
+    $params[$k] = $$k;
+
+    // unset key from params that are using default values. So URLs aren't
+    // ridiculously long.
+    if ($params[$k] == $v[1]) {
+      unset($params[$k]);
+    }
+  }
+
+  $vbar  = ' class="vbar"';
+  $vwbar = ' class="vwbar"';
+  $vwlbar = ' class="vwlbar"';
+  $vbbar = ' class="vbbar"';
+  $vrbar = ' class="vrbar"';
+  $vgbar = ' class="vgbar"';
+  
+  //$xhprof_runs_impl = new XHProfRuns_Default('/tmp');
+  $xhprof_runs_impl = new DevelXHProfRuns('/tmp');
+  drupal_add_css(drupal_get_path('module', 'jquery_ui') . '/jquery.ui/themes/base/ui.all.css');
+  drupal_add_js(drupal_get_path('module', 'xhprof_ui') . '/jquery.dataTables.js');
+  drupal_add_js(drupal_get_path('module', 'xhprof_ui') . '/xhprof_ui.js');
+  $output = xhprof_ui_displayXHProfReport($xhprof_runs_impl, $params, $source, $run_id, $wts, $symbol, $sort, $run1, $run2);
+  return $output;
+} 
+
+function xhprof_ui_scandir($dir, $source) {
+  if (is_dir($dir)) {
+    $runs = array();
+    foreach (glob("$dir/*.$source") as $file) {
+      list($run,$source) = explode('.', basename($file));
+      $runs[] = array(
+        'run_id' => $run,
+        'href' => htmlentities($_SERVER['SCRIPT_NAME']) . '?run=' . htmlentities($run) . '&source=' . htmlentities($source),
+        'basename' => htmlentities(basename($file)),
+        'date' => date("Y-m-d H:i:s", filemtime($file)),
+      );
+    }
+  }
+  return $runs;
+}

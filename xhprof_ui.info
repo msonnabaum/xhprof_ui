@@ -1,0 +1,7 @@
+; $Id:
+name = xhprof
+description = UI for xhprof runs.
+package = Development
+dependencies[] = devel
+dependencies[] = jquery_ui
+core = 6.x
