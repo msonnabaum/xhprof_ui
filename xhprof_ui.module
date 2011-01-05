@@ -1,5 +1,5 @@
 <?php
-
+$GLOBALS['XHPROF_LIB_ROOT'] = array_key_exists('XHPROF_LIB_ROOT', $GLOBALS) ? $GLOBALS['XHPROF_LIB_ROOT'] : '/Users/msonnabaum/www/php5-xhprof/xhprof_lib';
 require_once(dirname(__FILE__) .'/xhprof.inc');
 
 /**
@@ -119,11 +119,25 @@ class DevelXHProfRuns implements iXHProfRuns {
     return $run_id;
   }
 }
-
 function xhprof_ui_page() {
+  global $pager_page_array, $pager_total;
+  $page = isset($_GET['page']) ? $_GET['page'] : '';
+  
   $dir = ini_get("xhprof.output_dir");
-  $files = xhprof_ui_scandir($dir, variable_get('site_name', ''));
-  dsm($files);
+  $cache = cache_get('xhprof_runs', 'cache');
+  if ($cache) {
+    $files = $cache->data;
+  }
+  else {
+    $files = xhprof_ui_scandir($dir, variable_get('site_name', ''));
+    cache_set('xhprof_runs', $files);
+  }
+
+  // Set the pager info in these globals since we need to fake them for 
+  // theme_pager.
+  $limit = 50; 
+  $pager_page_array = array($page);
+  $pager_total = array((int)(count($files) / $limit));
 
   // Table attributes
   $attributes = array('id' => 'xhprof-runs-table');
@@ -135,7 +149,9 @@ function xhprof_ui_page() {
   
   // Table rows
   $rows = array();
-  foreach ($files as $file) {
+  $pager_start = $page * 50;
+  $pager_end = $pager_start + 50;
+  foreach (array_slice($files, $pager_start, $pager_end) as $file) {
     list($run_id, $source) = explode('.', $file);
     $row = array();
     $row[] = array('data' => l($file['run_id'], 'devel/xhprof_ui/view/' . $file['run_id']));
@@ -143,7 +159,8 @@ function xhprof_ui_page() {
     $rows[] = $row;
   }
 
-  $output = theme_table($header, $rows, $attributes);
+  $output = theme('table', $header, $rows, $attributes);
+  $output .= theme('pager', NULL, 50, 0);
   return $output; 
 }
 
@@ -204,11 +221,11 @@ function xhprof_ui_scandir($dir, $source) {
       list($run,$source) = explode('.', basename($file));
       $runs[] = array(
         'run_id' => $run,
-        'href' => htmlentities($_SERVER['SCRIPT_NAME']) . '?run=' . htmlentities($run) . '&source=' . htmlentities($source),
+        'source' => $source,
         'basename' => htmlentities(basename($file)),
         'date' => date("Y-m-d H:i:s", filemtime($file)),
       );
     }
   }
-  return $runs;
+  return array_reverse($runs);
 }
